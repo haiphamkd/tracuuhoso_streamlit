@@ -1,0 +1,23 @@
+--- CẤU HÌNH BẢO MẬT (QUAN TRỌNG - TUYỆT ĐỐI KHÔNG XÓA) ---
+
+Những file này chứa mật khẩu và key, không được đẩy lên GitHub
+
+service_account.json
+config.json
+session.json
+
+--- DỮ LIỆU ---
+
+Chặn file danh sách để tránh lộ thông tin bệnh nhân
+
+danh_sach_thu_muc.csv
+
+--- FILE RÁC HỆ THỐNG PYTHON ---
+
+pycache/
+*.pyc
+.streamlit/
+.DS_Store
+*.log
+venv/
+env/
