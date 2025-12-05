@@ -95,21 +95,25 @@ def save_config(url, key_path, password, db_config):
 st.markdown("""
     <style>
     header[data-testid="stHeader"] { height: 0px; background: transparent; }
+    
     .block-container { 
         padding-top: 0rem !important; 
         padding-bottom: 2rem !important; 
         background-color: transparent !important; 
     }
+    
     .stTextInput input {
         background-color: #e3f2fd !important; 
         border: 1px solid #90caf9 !important;
         color: #0d47a1 !important;
         font-weight: 500;
     }
+    
     [data-testid="stDataFrame"] thead th {
         background-color: #1565c0 !important; 
         color: white !important;
     }
+    
     h1 { margin-top: -1rem !important; padding-bottom: 1rem !important; font-size: 2rem !important; color: #0d47a1 !important; z-index: 999; }
     div[data-testid="stVerticalBlock"] > div:has(div.sticky-marker) {
         position: sticky; top: 0rem; background-color: white; z-index: 990;
@@ -127,6 +131,7 @@ st.markdown("""
     .stop-btn button { background-color: #d32f2f !important; color: white !important; }
     .stop-btn button:hover { background-color: #b71c1c !important; }
     [data-testid="stDataFrame"] { border: 1px solid #dbe4ef; border-radius: 8px; overflow: hidden; }
+    
     .logout-btn button {
         background-color: white !important; color: #d32f2f !important; border: 2px solid #ef9a9a !important; margin-top: 5px !important; box-shadow: none !important;
     }
@@ -233,15 +238,21 @@ def fetch_folders_smart(service, folder_id, existing_data_dict):
         return results, new_count
     except Exception as e: st.error(f"API Error: {e}"); return [], 0
 
-# --- 3. DB LOGIC (FIXED CAST TYPE) ---
+# --- 3. DB LOGIC (TEST & FETCH) ---
+def test_db_connection(db_config):
+    try:
+        conn = psycopg2.connect(
+            user=db_config['user'], password=db_config['password'],
+            host=db_config['host'], port=db_config['port'], database=db_config['database'], connect_timeout=5)
+        conn.close()
+        return True, "Kết nối thành công!"
+    except Exception as e:
+        return False, str(e)
+
 def fetch_patient_info_from_db(patient_ids, db_config):
     if not patient_ids: return {}
     pmap = {}; conn = None
     
-    # Debug: In ra danh sách ID đang tìm
-    # st.write(f"🔍 Debug DB: Đang tìm {len(patient_ids)} ID: {patient_ids[:5]}...") 
-    
-    # Chuẩn hóa ID
     clean_ids = [str(pid).strip() for pid in patient_ids if pid]
     if not clean_ids: return {}
 
@@ -255,21 +266,11 @@ def fetch_patient_info_from_db(patient_ids, db_config):
         for i in range(0, len(clean_ids), chunk):
             c = clean_ids[i:i+chunk]
             p = ','.join(['%s']*len(c))
-            
-            # --- QUAN TRỌNG: CAST AS TEXT để so sánh chuỗi ---
-            # DB Mabn có thể là varchar hoặc char, cần ép về text và trim để so sánh
             query = f"SELECT TRIM(CAST(mabn AS TEXT)), hoten, namsinh FROM medibv.btdbn WHERE TRIM(CAST(mabn AS TEXT)) IN ({p})"
-            
             cur.execute(query, tuple(c))
-            rows = cur.fetchall()
-            
-            # Debug: In ra số lượng tìm thấy
-            # st.write(f"--> Tìm thấy: {len(rows)} kết quả trong DB")
-            
-            for r in rows: 
+            for r in cur.fetchall(): 
                 mabn_db = str(r[0]).strip()
                 pmap[mabn_db] = {'hoten': r[1], 'namsinh': r[2]}
-                
     except Exception as e: 
         st.error(f"DB Error: {e}")
     finally:
@@ -369,9 +370,17 @@ with st.sidebar:
             h = st.text_input("Host", db['host']); pt = st.text_input("Port", db['port'])
             us = st.text_input("User", db['user']); ps = st.text_input("Pass", db['password'], type="password")
             dbn = st.text_input("DB Name", db['database'])
-            if st.button("💾 Lưu Cấu Hình", use_container_width=True):
-                save_config(url, DEFAULT_KEY_FILE, current_config.get("admin_password"), {"host":h,"port":pt,"user":us,"password":ps,"database":dbn})
-                st.toast("Đã lưu!", icon="✅"); st.rerun()
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("🔌 Test DB", use_container_width=True):
+                    ok, msg = test_db_connection({"host":h,"port":pt,"user":us,"password":ps,"database":dbn})
+                    if ok: st.success("Kết nối DB OK!")
+                    else: st.error(f"Lỗi: {msg}")
+            with c2:
+                if st.button("💾 Lưu Cấu Hình", use_container_width=True):
+                    save_config(url, DEFAULT_KEY_FILE, current_config.get("admin_password"), {"host":h,"port":pt,"user":us,"password":ps,"database":dbn})
+                    st.toast("Đã lưu!", icon="✅"); st.rerun()
 
         with st.expander("🔄 Quản Lý Dữ Liệu", expanded=True):
             st.info("Cập nhật danh sách mới từ Drive.")
@@ -393,27 +402,22 @@ with st.sidebar:
                     # 1. QUÉT DRIVE
                     ndata, cnt = fetch_folders_smart(svc, fid, ex_dict)
                     
-                    if ndata and st.session_state.is_running:
+                    # LOGIC LƯU DỮ LIỆU AN TOÀN (Dù có bấm Dừng thì vẫn lưu phần đã quét)
+                    if ndata:
                         # 2. Lọc ID cần query DB (Mới hoặc chưa có tên)
                         q_ids = []
                         for it in ndata:
                             mabn = str(it['Mã bệnh nhân']).strip()
                             old = ex_dict.get(it['ID'])
-                            
-                            # Logic: Luôn query lại nếu chưa có tên
                             if not old or not old.get('Tên Bệnh Nhân') or str(old.get('Tên Bệnh Nhân')).strip() == "" or old.get('Tên Bệnh Nhân') == "Chưa tìm thấy":
                                 q_ids.append(mabn)
                         
                         # 3. Query DB
                         q_ids = list(set(q_ids))
                         p_info = {}
-                        
                         if q_ids:
-                            # Hiển thị thông báo để debug nếu cần
-                            with st.expander("🔍 Chi tiết kết nối DB", expanded=True):
-                                st.write(f"Đang tìm {len(q_ids)} hồ sơ trong DB...")
+                            with st.spinner(f"Đang tìm thông tin {len(q_ids)} bệnh nhân trong DB..."):
                                 p_info = fetch_patient_info_from_db(q_ids, current_config.get("db_config", DEFAULT_DB_CONFIG))
-                                st.write(f"✅ Tìm thấy: {len(p_info)} kết quả.")
                         
                         # 4. Gộp dữ liệu
                         final = []
@@ -428,13 +432,14 @@ with st.sidebar:
                                 it['Năm Sinh'] = o.get('Năm Sinh', "")
                             final.append(it)
                         
+                        # 5. LƯU VÀ RELOAD
                         saved_df, added_count = save_data_upsert(pd.DataFrame(final))
                         
                         if added_count > 0: st.success(f"Đã thêm {added_count} hồ sơ mới!")
                         elif len(p_info) > 0: st.success(f"Đã cập nhật thông tin cho {len(p_info)} bệnh nhân!")
                         else: st.success("Dữ liệu đã được đồng bộ!")
                         time.sleep(1)
-                        
+                    
                     st.session_state.is_running = False; st.rerun()
                 else:
                     st.error(err or "Lỗi cấu hình Drive")
@@ -474,12 +479,12 @@ if not df.empty:
     
     cfg = {
         "Mã bệnh nhân": st.column_config.TextColumn("Mã BN", width="small", required=True),
-        "Tên Bệnh Nhân": st.column_config.TextColumn("Họ Tên", width=None),
+        "Tên Bệnh Nhân": st.column_config.TextColumn("Họ Tên", width="medium"), # FIX WIDTH MEDIUM
         "Năm Sinh": st.column_config.TextColumn("Năm Sinh", width="small"),
-        "Ngày Tạo": st.column_config.DatetimeColumn("Ngày tạo (VN)", format="DD/MM/YYYY HH:mm", width=None),
+        "Ngày Tạo": st.column_config.DatetimeColumn("Ngày tạo (VN)", format="DD/MM/YYYY HH:mm", width="medium"), # FIX WIDTH MEDIUM
         "Số Thư Mục Con": st.column_config.NumberColumn("Thư mục", format="%d 📂", width="small"),
         "Số File": st.column_config.NumberColumn("File", format="%d 📄", width="small"),
-        "Link Truy Cập": st.column_config.LinkColumn("Truy Cập", display_text="Mở Link 🔗", width=None),
+        "Link Truy Cập": st.column_config.LinkColumn("Truy Cập", display_text="Mở Link 🔗", width="medium"), # FIX WIDTH MEDIUM
         "ID": st.column_config.TextColumn("ID Drive", width="small"),
         "Link (Copy)": st.column_config.TextColumn("Link (Copy)", width="large", help="Bấm vào để copy nhanh"),
     }
